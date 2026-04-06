@@ -160,8 +160,29 @@ export default function JobTrackerApp({
         body: JSON.stringify({ url: linkInput.trim() }),
       });
       const extractData = await extractRes.json();
+      if (!extractRes.ok) {
+        showToast(
+          extractData.message || extractData.error || "Extract request failed",
+          "error"
+        );
+        return;
+      }
       const info = extractData.data || {};
       const extractHint = extractData.meta?.hint;
+      const geminiErr = extractData.meta?.geminiError;
+      const geminiMsg = extractData.meta?.geminiMessage;
+
+      if (!info.company?.trim() && !info.title?.trim()) {
+        showToast(
+          geminiMsg
+            ? `Could not extract job details: ${geminiMsg}`
+            : geminiErr
+              ? `AI step failed (${geminiErr}). Check GEMINI_API_KEY / GEMINI_MODEL in .env.`
+              : "Could not extract company or title from this page. Try a direct ATS link or add manually.",
+          "error"
+        );
+        return;
+      }
 
       const jobBody = {
         company: info.company || "",
@@ -193,10 +214,14 @@ export default function JobTrackerApp({
         showToast(
           extractHint
             ? `Saved. ${extractHint}`
-            : "Job extracted & saved!"
+            : geminiErr && geminiMsg
+              ? `Saved. (${geminiMsg})`
+              : "Job extracted & saved!"
         );
+        setLinkInput("");
+      } else {
+        showToast(savedJob.error || "Could not save job", "error");
       }
-      setLinkInput("");
     } catch (err) {
       console.error(err);
       showToast("Failed to extract — try adding manually", "error");

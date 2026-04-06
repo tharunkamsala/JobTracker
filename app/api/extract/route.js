@@ -158,10 +158,19 @@ function parseTitleLine(line) {
 /**
  * Unified Gemini pass: merges scraped HTML + optional Greenhouse/Workday API payloads.
  * Works across LinkedIn, Indeed, Lever, Ashby, company sites, ATS shells, etc.
+ *
+ * Stable default model; override with GEMINI_MODEL in env (avoids fragile `*-latest` aliases).
  */
+function getGeminiModel() {
+  return (
+    process.env.GEMINI_MODEL ||
+    "gemini-2.5-flash"
+  ).trim();
+}
+
 async function extractWithGeminiUnified(pageContent, url, atsHint) {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return null;
+  if (!apiKey) return { data: null, error: "missing_key", model: null };
 
   const ldSnippet = pageContent.jsonLd
     ? JSON.stringify(pageContent.jsonLd).slice(0, 4000)
@@ -217,35 +226,63 @@ Return ONLY valid JSON, no markdown:
   "notes": ""
 }`;
 
+  const model = getGeminiModel();
+  const urlApi = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
+
   try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 1536 },
-        }),
-      }
-    );
+    const res = await fetch(urlApi, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 1536 },
+      }),
+    });
     const data = await res.json();
-    if (data.error) {
-      console.error("Gemini API error:", data.error);
-      return null;
+    if (!res.ok || data.error) {
+      const msg =
+        data?.error?.message ||
+        data?.error?.status ||
+        `HTTP ${res.status}`;
+      console.error("Gemini API error:", model, msg, data?.error);
+      return {
+        data: null,
+        error: "api_error",
+        message: msg,
+        model,
+        httpStatus: res.status,
+      };
     }
     const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const blockReason = data?.promptFeedback?.blockReason;
+    if (blockReason) {
+      console.error("Gemini blocked:", blockReason);
+      return { data: null, error: "blocked", message: String(blockReason), model };
+    }
     if (!text.trim()) {
-      console.error("Gemini empty response:", JSON.stringify(data).slice(0, 500));
-      return null;
+      const finish = data?.candidates?.[0]?.finishReason;
+      console.error("Gemini empty response:", finish, JSON.stringify(data).slice(0, 600));
+      return {
+        data: null,
+        error: "empty_response",
+        message: finish ? `No text (finish: ${finish})` : "Empty model output",
+        model,
+      };
     }
     const clean = text.replace(/```json|```/g, "").trim();
     const match = clean.match(/\{[\s\S]*\}/);
-    if (match) return JSON.parse(match[0]);
+    if (match) {
+      try {
+        return { data: JSON.parse(match[0]), error: null, model };
+      } catch {
+        return { data: null, error: "bad_json", message: "Model returned invalid JSON", model };
+      }
+    }
   } catch (err) {
     console.error("Gemini error:", err);
+    return { data: null, error: "exception", message: err.message, model };
   }
-  return null;
+  return { data: null, error: "parse_failed", model };
 }
 
 // Fallback: structured data + meta + title heuristics (no AI)
@@ -405,10 +442,16 @@ export async function POST(req) {
     }
 
     let extracted = mergedHints;
+    let geminiMeta = null;
     const hasGemini = !!process.env.GEMINI_API_KEY;
     if (hasGemini && (pageContent.ok || pageContent.bodyText || atsHint)) {
-      const gemini = await extractWithGeminiUnified(pageContent, url, atsHint);
-      extracted = mergeExtraction(mergedHints, gemini);
+      const geminiRes = await extractWithGeminiUnified(pageContent, url, atsHint);
+      if (geminiRes && typeof geminiRes === "object" && "data" in geminiRes) {
+        extracted = mergeExtraction(mergedHints, geminiRes.data);
+        geminiMeta = geminiRes;
+      } else {
+        extracted = mergeExtraction(mergedHints, null);
+      }
       if (atsHint) {
         for (const k of ["company", "title", "location", "salary", "work_type"]) {
           if (isFilled(atsHint[k])) extracted[k] = atsHint[k].trim();
@@ -445,6 +488,9 @@ export async function POST(req) {
         scrapeOk: pageContent.ok,
         status: pageContent.status,
         thinContent: !!pageContent.thinContent,
+        geminiModel: geminiMeta?.model,
+        geminiError: geminiMeta?.error || undefined,
+        geminiMessage: geminiMeta?.message || undefined,
         hint: warnThin
           ? "Page returned little text (often login/JS-only). Fill details manually or try the job’s direct ATS link."
           : undefined,

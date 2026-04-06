@@ -192,14 +192,17 @@ export default function JobTrackerApp({
       const extractHint = extractData.meta?.hint;
       const geminiErr = extractData.meta?.geminiError;
       const geminiMsg = extractData.meta?.geminiMessage;
+      const aiFallback = extractData.meta?.aiFallback;
 
       if (!info.company?.trim() && !info.title?.trim()) {
         showToast(
-          geminiMsg
-            ? `Could not extract job details: ${geminiMsg}`
-            : geminiErr
-              ? `AI step failed (${geminiErr}). Check GEMINI_API_KEY / GEMINI_MODEL in .env.`
-              : "Could not extract company or title from this page. Try a direct ATS link or add manually.",
+          aiFallback === "quota"
+            ? "Could not read company or title from this page (AI limit hit and page data was too thin). Try a Greenhouse/Workday link or add manually."
+            : geminiMsg
+              ? `Could not extract job details: ${geminiMsg}`
+              : geminiErr
+                ? `AI step failed (${geminiErr}). Check GEMINI_API_KEY / GEMINI_MODEL in .env.`
+                : "Could not extract company or title from this page. Try a direct ATS link or add manually.",
           "error"
         );
         return;
@@ -235,8 +238,10 @@ export default function JobTrackerApp({
         showToast(
           extractHint
             ? `Saved. ${extractHint}`
-            : geminiErr && geminiMsg
-              ? `Saved. (${geminiMsg})`
+            : aiFallback === "quota"
+              ? "Saved using page & ATS data (AI rate limit — basic extraction only)."
+            : aiFallback === "other"
+              ? "Saved using page & ATS data (AI step skipped)."
               : "Job extracted & saved!"
         );
         setLinkInput("");
@@ -521,8 +526,8 @@ export default function JobTrackerApp({
           </div>
           <p className="text-[10px] text-white/40 m-0">
             {isLocked
-              ? "Links you paste on this page are saved to this list. Duplicates are blocked unless you confirm."
-              : "Pick a page above (or use the List menu) so new saves go to the right bucket. Duplicates are blocked unless you confirm."}
+              ? "Links you paste on this page are saved to this list. The same job URL twice is blocked unless you confirm."
+              : "Pick a page above (or use the List menu) so new saves go to the right bucket. Same job link twice is blocked unless you confirm."}
           </p>
         </div>
 

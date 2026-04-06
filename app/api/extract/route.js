@@ -285,6 +285,25 @@ Return ONLY valid JSON, no markdown:
   return { data: null, error: "parse_failed", model };
 }
 
+/** AI failed → use heuristics; distinguish quota/rate-limit (quiet) vs other errors. */
+function classifyAiFallback(res) {
+  if (!res?.error) return null;
+  const msg = String(res.message || "").toLowerCase();
+  const status = res.httpStatus;
+  if (
+    status === 429 ||
+    status === 503 ||
+    msg.includes("quota") ||
+    msg.includes("rate limit") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("too many requests") ||
+    msg.includes("exceeded your current quota")
+  ) {
+    return "quota";
+  }
+  return "other";
+}
+
 // Fallback: structured data + meta + title heuristics (no AI)
 function extractFromStructuredData(pageContent, url) {
   const result = {
@@ -443,12 +462,17 @@ export async function POST(req) {
 
     let extracted = mergedHints;
     let geminiMeta = null;
-    const hasGemini = !!process.env.GEMINI_API_KEY;
+    /** No AI: omit GEMINI_API_KEY, or set DISABLE_GEMINI_AI=true (same pipeline: ATS APIs + scrape + JSON-LD/heuristics). */
+    const aiDisabled =
+      process.env.DISABLE_GEMINI_AI === "true" ||
+      process.env.DISABLE_GEMINI_AI === "1";
+    const hasGemini =
+      !!process.env.GEMINI_API_KEY && !aiDisabled;
     if (hasGemini && (pageContent.ok || pageContent.bodyText || atsHint)) {
       const geminiRes = await extractWithGeminiUnified(pageContent, url, atsHint);
+      geminiMeta = geminiRes && typeof geminiRes === "object" ? geminiRes : null;
       if (geminiRes && typeof geminiRes === "object" && "data" in geminiRes) {
         extracted = mergeExtraction(mergedHints, geminiRes.data);
-        geminiMeta = geminiRes;
       } else {
         extracted = mergeExtraction(mergedHints, null);
       }
@@ -470,6 +494,10 @@ export async function POST(req) {
         ? "workday"
         : null;
 
+    const aiFallback = geminiMeta ? classifyAiFallback(geminiMeta) : null;
+    const aiOk = !!(geminiMeta && !geminiMeta.error && geminiMeta.data);
+    const suppressGeminiDetail = aiFallback === "quota";
+
     return NextResponse.json({
       success: true,
       data: {
@@ -483,14 +511,21 @@ export async function POST(req) {
         link: url,
       },
       meta: {
-        method: hasGemini ? "unified-ai" : "heuristic+ats",
+        method:
+          !hasGemini
+            ? "heuristic+ats"
+            : aiOk
+              ? "unified-ai"
+              : "heuristic+ats-fallback",
+        aiDisabled: aiDisabled || undefined,
+        aiFallback: aiFallback || undefined,
         atsProvider,
         scrapeOk: pageContent.ok,
         status: pageContent.status,
         thinContent: !!pageContent.thinContent,
         geminiModel: geminiMeta?.model,
-        geminiError: geminiMeta?.error || undefined,
-        geminiMessage: geminiMeta?.message || undefined,
+        geminiError: suppressGeminiDetail ? undefined : geminiMeta?.error || undefined,
+        geminiMessage: suppressGeminiDetail ? undefined : geminiMeta?.message || undefined,
         hint: warnThin
           ? "Page returned little text (often login/JS-only). Fill details manually or try the job’s direct ATS link."
           : undefined,

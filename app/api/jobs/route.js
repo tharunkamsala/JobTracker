@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
-import { normalizeJobLink, normalizeCompanyTitle } from "@/lib/normalizeJob";
+import { normalizeJobLink } from "@/lib/normalizeJob";
 
 const SUPABASE_SETUP_MSG =
   "Supabase env missing on the server. In Vercel → Project → Settings → Environment Variables, add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY (same as .env.local), then Redeploy.";
@@ -22,22 +22,14 @@ function supabaseNetworkError(err) {
 
 const DEDUPE_ROW_LIMIT = 5000;
 
+/** Duplicate = same normalized posting URL (ATS job id lives in the path for most boards). No company/title match. */
 function findDuplicate(rows, payload) {
   const normLink = normalizeJobLink(payload.link || "");
-  const company = normalizeCompanyTitle(payload.company || "");
-  const title = normalizeCompanyTitle(payload.title || "");
+  if (!normLink) return null;
 
   for (const r of rows || []) {
-    if (normLink && normalizeJobLink(r.link || "") === normLink) {
-      return { id: r.id, reason: "link", company: r.company, title: r.title };
-    }
-    if (
-      company &&
-      title &&
-      normalizeCompanyTitle(r.company || "") === company &&
-      normalizeCompanyTitle(r.title || "") === title
-    ) {
-      return { id: r.id, reason: "company_title", company: r.company, title: r.title };
+    if (normalizeJobLink(r.link || "") === normLink) {
+      return { id: r.id, reason: "same_job_url", company: r.company, title: r.title };
     }
   }
   return null;

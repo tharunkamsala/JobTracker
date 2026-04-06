@@ -133,9 +133,30 @@ export default function JobTrackerApp({
   const fetchJobs = async () => {
     try {
       const res = await fetch("/api/jobs");
-      const data = await res.json();
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        showToast("Could not read server response", "error");
+        return;
+      }
+      if (!res.ok) {
+        showToast(
+          data?.error || (res.status === 401 ? "Unauthorized — check site login or SITE_ACCESS_TOKEN." : "Could not load jobs"),
+          "error"
+        );
+        return;
+      }
       if (Array.isArray(data)) setJobs(data);
+      else if (data?.error) showToast(data.error, "error");
     } catch (err) {
+      const msg = err?.message || String(err);
+      showToast(
+        /fetch failed/i.test(msg)
+          ? "Network error loading jobs. Check Vercel env (Supabase URL/key) and redeploy."
+          : msg,
+        "error"
+      );
       console.error("Failed to load jobs:", err);
     } finally {
       setInitialLoad(false);

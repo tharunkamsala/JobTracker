@@ -152,7 +152,7 @@ export default function JobTrackerApp({
   const [pendingForceSave, setPendingForceSave] = useState(null);
   const [searchTerm, setSearchTerm] = useState("");
   const [showManual, setShowManual] = useState(false);
-  const [showStats, setShowStats] = useState(true);
+  const [showStats, setShowStats] = useState(false);
   const [columnOrder, setColumnOrder] = useState(() => [...DEFAULT_COLUMN_ORDER]);
   const [columnVisible, setColumnVisible] = useState(() => ({ ...DEFAULT_COLUMN_VISIBLE }));
   const [columnWidths, setColumnWidths] = useState(() => ({ ...DEFAULT_COLUMN_WIDTHS }));
@@ -832,83 +832,6 @@ export default function JobTrackerApp({
                   className="text-white/60 hover:text-white text-xs border border-white/20 rounded-lg px-3 py-2 bg-white/5 cursor-pointer transition-colors">
                   {showStats ? "📊 Hide Stats" : "📊 Show Stats"}
                 </button>
-                <div className="relative" ref={columnPanelRef}>
-                  <button
-                    type="button"
-                    onClick={() => setShowColumnPanel((v) => !v)}
-                    className="text-white/60 hover:text-white text-xs border border-white/20 rounded-lg px-3 py-2 bg-white/5 cursor-pointer transition-colors"
-                  >
-                    ⚙ Columns
-                  </button>
-                  {showColumnPanel && (
-                    <div
-                      className="absolute right-0 top-full mt-2 z-[110] w-[min(100vw-2rem,20rem)] rounded-xl border border-gray-200 bg-white shadow-xl p-3 text-left"
-                      onMouseDown={(e) => e.stopPropagation()}
-                    >
-                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
-                        Show, order & resize
-                      </div>
-                      <p className="text-[10px] text-gray-500 m-0 mb-2 leading-snug">
-                        Drag rows to reorder. Drag column edges in the table to resize. Preferences save in this browser.
-                      </p>
-                      <ul className="max-h-64 overflow-y-auto space-y-1 m-0 p-0 list-none">
-                        {columnOrder
-                          .filter((id) => id !== "actions")
-                          .map((id) => {
-                            const meta = TABLE_COLUMNS.find((c) => c.id === id);
-                            if (!meta) return null;
-                            return (
-                              <li
-                                key={id}
-                                draggable
-                                onDragStart={(e) => {
-                                  e.dataTransfer.setData("text/plain", id);
-                                  e.dataTransfer.effectAllowed = "move";
-                                }}
-                                onDragOver={(e) => {
-                                  e.preventDefault();
-                                  e.dataTransfer.dropEffect = "move";
-                                }}
-                                onDrop={(e) => {
-                                  e.preventDefault();
-                                  const from = e.dataTransfer.getData("text/plain");
-                                  moveColumnOrder(from, id);
-                                }}
-                                className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-navy bg-gray-50 hover:bg-gray-100 cursor-grab active:cursor-grabbing"
-                              >
-                                <span className="text-gray-400 select-none" aria-hidden>⋮⋮</span>
-                                <input
-                                  type="checkbox"
-                                  className="rounded border-gray-300"
-                                  checked={columnVisible[id] !== false}
-                                  onChange={() =>
-                                    setColumnVisible((prev) => {
-                                      const cur = prev[id] !== false;
-                                      return { ...prev, [id]: !cur };
-                                    })
-                                  }
-                                />
-                                <span className="flex-1 truncate font-medium">{meta.label}</span>
-                              </li>
-                            );
-                          })}
-                      </ul>
-                      <p className="text-[10px] text-gray-400 mt-2 mb-0">
-                        Actions column (save / delete) always stays on the right.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          resetTableLayout();
-                          setShowColumnPanel(false);
-                        }}
-                        className="mt-3 w-full rounded-lg border border-gray-200 bg-white py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50 cursor-pointer"
-                      >
-                        Reset layout
-                      </button>
-                    </div>
-                  )}
-                </div>
                 <button onClick={exportCSV}
                   className="text-white/60 hover:text-white text-xs border border-white/20 rounded-lg px-3 py-2 bg-white/5 cursor-pointer transition-colors">
                   📥 Export CSV
@@ -1231,6 +1154,129 @@ export default function JobTrackerApp({
           </div>
         ) : (
           <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100">
+            <div
+              className="relative border-b border-gray-100 bg-[#FAFBFC] px-3 py-3 sm:px-4"
+              ref={columnPanelRef}
+            >
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+                <p className="text-xs text-gray-600 m-0 leading-snug order-2 sm:order-1">
+                  <strong className="text-navy">Customize this table</strong>
+                  <span className="text-gray-500"> — use the button to show or hide columns (pink = visible). Drag ⋮⋮ to reorder.</span>
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowColumnPanel((v) => !v)}
+                  className="order-1 sm:order-2 inline-flex w-full sm:w-auto shrink-0 items-center justify-center gap-2 rounded-xl border-2 border-accent bg-white px-4 py-3 text-sm font-bold text-navy shadow-md hover:bg-accent/10 sm:py-2.5"
+                >
+                  <span className="text-lg leading-none" aria-hidden>
+                    ⚙
+                  </span>
+                  {showColumnPanel ? "Close column options" : "Show / hide columns"}
+                </button>
+              </div>
+              {showColumnPanel && (
+                <div
+                  className="absolute left-3 right-3 top-full z-[110] mt-2 rounded-xl border border-gray-200 bg-white p-3 text-left shadow-xl sm:left-auto sm:right-4 sm:w-[min(20rem,calc(100vw-2rem))]"
+                  onMouseDown={(e) => e.stopPropagation()}
+                >
+                  <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+                    Show, order & resize
+                  </div>
+                  <p className="text-[10px] text-gray-500 m-0 mb-2 leading-snug">
+                    Pink switch = column visible. Drag ⋮⋮ to reorder. Drag column edges in the header to resize. Saved in this browser.
+                  </p>
+                  <ul className="max-h-64 overflow-y-auto space-y-1 m-0 p-0 list-none">
+                    {columnOrder
+                      .filter((id) => id !== "actions")
+                      .map((id) => {
+                        const meta = TABLE_COLUMNS.find((c) => c.id === id);
+                        if (!meta) return null;
+                        return (
+                          <li
+                            key={id}
+                            onDragOver={(e) => {
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = "move";
+                            }}
+                            onDrop={(e) => {
+                              e.preventDefault();
+                              const from = e.dataTransfer.getData("text/plain");
+                              moveColumnOrder(from, id);
+                            }}
+                            className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-navy bg-gray-50 hover:bg-gray-100"
+                          >
+                            <span
+                              draggable
+                              aria-hidden
+                              title="Drag to reorder"
+                              onDragStart={(e) => {
+                                e.dataTransfer.setData("text/plain", id);
+                                e.dataTransfer.effectAllowed = "move";
+                              }}
+                              className="text-gray-400 select-none cursor-grab active:cursor-grabbing touch-none shrink-0 px-0.5"
+                            >
+                              ⋮⋮
+                            </span>
+                            <div className="flex flex-1 items-center gap-2 min-w-0">
+                              <button
+                                type="button"
+                                role="switch"
+                                aria-checked={columnVisible[id] !== false}
+                                title={columnVisible[id] !== false ? "Hide column" : "Show column"}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setColumnVisible((prev) => {
+                                    const cur = prev[id] !== false;
+                                    return { ...prev, [id]: !cur };
+                                  });
+                                }}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                className={`relative shrink-0 h-7 w-12 rounded-full border-2 transition-colors focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-accent ${
+                                  columnVisible[id] !== false
+                                    ? "border-accent bg-accent"
+                                    : "border-gray-300 bg-gray-200"
+                                }`}
+                              >
+                                <span
+                                  className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow-md transition-transform duration-200 ${
+                                    columnVisible[id] !== false ? "translate-x-5" : "translate-x-0"
+                                  }`}
+                                />
+                              </button>
+                              <button
+                                type="button"
+                                className="truncate flex-1 text-left font-medium text-navy cursor-pointer m-0 p-0 bg-transparent border-none"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setColumnVisible((prev) => {
+                                    const cur = prev[id] !== false;
+                                    return { ...prev, [id]: !cur };
+                                  });
+                                }}
+                              >
+                                {meta.label}
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                  </ul>
+                  <p className="text-[10px] text-gray-400 mt-2 mb-0">
+                    Actions column (save / delete) always stays on the right.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetTableLayout();
+                      setShowColumnPanel(false);
+                    }}
+                    className="mt-3 w-full rounded-lg border border-gray-200 bg-white py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50 cursor-pointer"
+                  >
+                    Reset layout
+                  </button>
+                </div>
+              )}
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full border-collapse text-sm table-fixed">
                 <thead>

@@ -5,7 +5,7 @@ import {
   extractWorkday,
   getWorkdayUrlFallback,
 } from "@/lib/extractAts";
-import { deriveHeuristicJobId } from "@/lib/jobId";
+import { deriveHeuristicJobId, sanitizeJobId } from "@/lib/jobId";
 
 /** Walk JSON-LD and return first JobPosting node */
 function findJobPostingNode(data) {
@@ -52,7 +52,7 @@ async function scrapeUrl(url) {
         "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "no-cache",
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(8000),
     });
 
     const html = await res.text();
@@ -94,7 +94,7 @@ async function scrapeUrl(url) {
       .text()
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 8000);
+      .slice(0, 4000);
 
     const thinContent = bodyText.length < 80;
 
@@ -124,6 +124,22 @@ async function scrapeUrl(url) {
       error: err.message,
     };
   }
+}
+
+/** No HTML fetch — used when Greenhouse/Workday JSON already has company+title (saves hundreds of ms–seconds). */
+function emptyPageContent() {
+  return {
+    title: "",
+    ogTitle: "",
+    ogSiteName: "",
+    twitterTitle: "",
+    metaDesc: "",
+    bodyText: "",
+    jsonLd: null,
+    ok: false,
+    thinContent: true,
+    status: 0,
+  };
 }
 
 function pickBestTitle(pc) {
@@ -215,7 +231,7 @@ RULES:
 3. work_type: one of "Remote", "Hybrid", "On-site", or "" if unknown.
 4. source: short label such as "LinkedIn", "Greenhouse", "Workday", "Indeed", or the careers product name.
 5. notes: 1–3 sentences summarizing role/stack/location from official excerpt + page text; empty string if nothing useful.
-6. job_id: numeric or alphanumeric posting/requisition id if visible in URL or page; else "".
+6. job_id: posting / requisition / job number if visible (max 8 characters); else "".
 
 Return ONLY valid JSON, no markdown:
 {
@@ -452,18 +468,38 @@ function mergeExtraction(heuristic, ai) {
 }
 
 export async function POST(req) {
+  const t0 = Date.now();
   try {
     const { url } = await req.json();
     if (!url) {
       return NextResponse.json({ error: "URL is required" }, { status: 400 });
     }
 
-    const [pageContent, gh, wd] = await Promise.all([
-      scrapeUrl(url),
+    // 1) Thin ATS JSON first (often ~100–400ms). Do not wait on full HTML scrape yet.
+    const [gh, wd] = await Promise.all([
       extractGreenhouse(url).catch(() => null),
       extractWorkday(url).catch(() => null),
     ]);
     const atsHint = gh || wd || null;
+
+    /** No AI: omit GEMINI_API_KEY, or set DISABLE_GEMINI_AI=true (ATS + scrape + JSON-LD/heuristics only). */
+    const aiDisabled =
+      process.env.DISABLE_GEMINI_AI === "true" ||
+      process.env.DISABLE_GEMINI_AI === "1";
+    const hasGemini =
+      !!process.env.GEMINI_API_KEY && !aiDisabled;
+
+    // With Gemini: always scrape so AI gets JSON-LD + body (AI runs first when a key is set).
+    // Without Gemini: skip HTML fetch when Greenhouse/Workday already returned company+title.
+    const canSkipScrape =
+      !hasGemini &&
+      atsHint &&
+      isFilled(atsHint.company) &&
+      isFilled(atsHint.title);
+
+    const pageContent = canSkipScrape
+      ? emptyPageContent()
+      : await scrapeUrl(url);
 
     const baseline = extractFromStructuredData(pageContent, url);
     let mergedHints = baseline;
@@ -476,28 +512,26 @@ export async function POST(req) {
 
     let extracted = mergedHints;
     let geminiMeta = null;
-    /** No AI: omit GEMINI_API_KEY, or set DISABLE_GEMINI_AI=true (same pipeline: ATS APIs + scrape + JSON-LD/heuristics). */
-    const aiDisabled =
-      process.env.DISABLE_GEMINI_AI === "true" ||
-      process.env.DISABLE_GEMINI_AI === "1";
-    const hasGemini =
-      !!process.env.GEMINI_API_KEY && !aiDisabled;
-    /** Greenhouse/Workday already returned company+title — skip Gemini for speed (set FORCE_GEMINI_AI=true to always call AI). */
-    const skipGeminiForSpeed =
-      !!atsHint &&
-      isFilled(atsHint.company) &&
-      isFilled(atsHint.title) &&
-      process.env.FORCE_GEMINI_AI !== "true";
 
     if (
       hasGemini &&
-      !skipGeminiForSpeed &&
       (pageContent.ok || pageContent.bodyText || atsHint)
     ) {
-      const geminiRes = await extractWithGeminiUnified(pageContent, url, atsHint);
-      geminiMeta = geminiRes && typeof geminiRes === "object" ? geminiRes : null;
-      if (geminiRes && typeof geminiRes === "object" && "data" in geminiRes) {
-        extracted = mergeExtraction(mergedHints, geminiRes.data);
+      const geminiRes = await extractWithGeminiUnified(
+        pageContent,
+        url,
+        atsHint
+      );
+      geminiMeta =
+        geminiRes && typeof geminiRes === "object" ? geminiRes : null;
+      const geminiSuccess =
+        !!geminiMeta &&
+        !geminiMeta.error &&
+        geminiMeta.data &&
+        typeof geminiMeta.data === "object";
+
+      if (geminiSuccess) {
+        extracted = mergeExtraction(mergedHints, geminiMeta.data);
       } else {
         extracted = mergeExtraction(mergedHints, null);
       }
@@ -519,8 +553,14 @@ export async function POST(req) {
         ? "workday"
         : null;
 
-    const aiFallback = geminiMeta ? classifyAiFallback(geminiMeta) : null;
-    const aiOk = !!(geminiMeta && !geminiMeta.error && geminiMeta.data);
+    const aiFallback =
+      hasGemini && geminiMeta ? classifyAiFallback(geminiMeta) : null;
+    const aiOk = !!(
+      geminiMeta &&
+      !geminiMeta.error &&
+      geminiMeta.data &&
+      typeof geminiMeta.data === "object"
+    );
     const suppressGeminiDetail = aiFallback === "quota";
 
     let jobIdOut =
@@ -528,6 +568,9 @@ export async function POST(req) {
       (isFilled(extracted.job_id) && extracted.job_id.trim()) ||
       "";
     if (!jobIdOut) jobIdOut = deriveHeuristicJobId(url);
+    jobIdOut = sanitizeJobId(jobIdOut);
+
+    const durationMs = Date.now() - t0;
 
     return NextResponse.json({
       success: true,
@@ -543,15 +586,19 @@ export async function POST(req) {
         link: url,
       },
       meta: {
-        method:
-          !hasGemini || skipGeminiForSpeed
-            ? skipGeminiForSpeed
-              ? "ats-fast"
-              : "heuristic+ats"
-            : aiOk
-              ? "unified-ai"
-              : "heuristic+ats-fallback",
-        skippedGeminiForAtsSpeed: skipGeminiForSpeed || undefined,
+        durationMs,
+        skippedHtmlScrape: canSkipScrape || undefined,
+        method: !hasGemini
+          ? canSkipScrape
+            ? "ats-instant"
+            : "heuristic+ats"
+          : aiOk
+            ? "unified-ai"
+            : aiFallback === "quota"
+              ? "manual+quota"
+              : geminiMeta
+                ? "manual+ai-fallback"
+                : "heuristic+ats",
         aiDisabled: aiDisabled || undefined,
         aiFallback: aiFallback || undefined,
         atsProvider,

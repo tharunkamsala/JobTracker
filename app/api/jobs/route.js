@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase, isSupabaseConfigured } from "@/lib/supabase";
 import { normalizeJobLink } from "@/lib/normalizeJob";
+import { sanitizeJobId } from "@/lib/jobId";
 
 const SUPABASE_SETUP_MSG =
   "Supabase env missing on the server. In Vercel → Project → Settings → Environment Variables, add NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY (same as .env.local), then Redeploy.";
@@ -108,7 +109,7 @@ export async function POST(req) {
           follow_up: body.follow_up || "",
           notes: body.notes || "",
           bucket: body.bucket || "General",
-          job_id: body.job_id || "",
+          job_id: sanitizeJobId(body.job_id),
         },
       ])
       .select()
@@ -131,6 +132,9 @@ export async function PUT(req) {
   try {
     const body = await req.json();
     const { id, ...updates } = body;
+    if ("job_id" in updates) {
+      updates.job_id = sanitizeJobId(updates.job_id);
+    }
 
     const { data, error } = await supabase
       .from("jobs")

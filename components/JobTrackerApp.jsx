@@ -1,8 +1,9 @@
 "use client";
-import { useState, useEffect, useCallback, memo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, memo } from "react";
 import StatusBadge from "@/components/StatusBadge";
 import PriorityBadge from "@/components/PriorityBadge";
 import { STATUS_COLORS, JOB_BUCKETS } from "@/lib/constants";
+import { sanitizeJobId } from "@/lib/jobId";
 import TrackNav from "@/components/TrackNav";
 
 /** `YYYY-MM-DD` for <input type="date" /> */
@@ -21,6 +22,7 @@ const EditRowInput = memo(function EditRowInput({
   onChange,
   placeholder,
   type = "text",
+  maxLength,
   className = "w-full min-w-[7.5rem] border border-gray-200 rounded-lg px-2 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 text-navy bg-white",
 }) {
   return (
@@ -29,6 +31,7 @@ const EditRowInput = memo(function EditRowInput({
       value={value ?? ""}
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
+      maxLength={maxLength}
       className={className}
     />
   );
@@ -75,6 +78,59 @@ const MetricRow = memo(function MetricRow({ label, value, color, hint }) {
   );
 });
 
+const LS_TABLE_KEY = "job-tracker-table-v1";
+
+/** Data + actions column metadata — order / visibility / widths are user-controlled (localStorage). */
+const TABLE_COLUMNS = [
+  { id: "company", label: "Company", hideable: true, minW: 96, defaultW: 168 },
+  { id: "title", label: "Title", hideable: true, minW: 120, defaultW: 200 },
+  {
+    id: "job_id",
+    label: "Post ID",
+    headerTitle:
+      "Job ID, Requisition ID, or posting # (as shown on Greenhouse, Workday, LinkedIn, etc.) — max 8 characters",
+    hideable: true,
+    minW: 72,
+    defaultW: 104,
+  },
+  { id: "bucket", label: "Track", hideable: true, minW: 88, defaultW: 120 },
+  { id: "status", label: "Status", hideable: true, minW: 100, defaultW: 128 },
+  { id: "priority", label: "Priority", hideable: true, minW: 88, defaultW: 100 },
+  { id: "date_applied", label: "Date", hideable: true, minW: 108, defaultW: 120 },
+  { id: "salary", label: "Salary", hideable: true, minW: 72, defaultW: 100 },
+  { id: "location", label: "Location", hideable: true, minW: 88, defaultW: 140 },
+  { id: "work_type", label: "Type", hideable: true, minW: 64, defaultW: 80 },
+  { id: "source", label: "Source", hideable: true, minW: 72, defaultW: 96 },
+  { id: "link", label: "Link", hideable: true, minW: 56, defaultW: 72 },
+  { id: "notes", label: "Notes", hideable: true, minW: 100, defaultW: 200 },
+  { id: "actions", label: "", hideable: false, minW: 88, defaultW: 100 },
+];
+
+const DEFAULT_COLUMN_ORDER = TABLE_COLUMNS.map((c) => c.id);
+const DEFAULT_COLUMN_VISIBLE = Object.fromEntries(
+  TABLE_COLUMNS.filter((c) => c.hideable).map((c) => [c.id, true])
+);
+const DEFAULT_COLUMN_WIDTHS = Object.fromEntries(
+  TABLE_COLUMNS.map((c) => [c.id, c.defaultW])
+);
+
+function mergeColumnOrder(saved) {
+  const base = DEFAULT_COLUMN_ORDER;
+  if (!Array.isArray(saved)) return [...base];
+  const seen = new Set();
+  const out = [];
+  for (const id of saved) {
+    if (base.includes(id) && !seen.has(id)) {
+      out.push(id);
+      seen.add(id);
+    }
+  }
+  for (const id of base) {
+    if (!seen.has(id)) out.push(id);
+  }
+  return out;
+}
+
 export default function JobTrackerApp({
   lockedBucket = null,
   pageTitle = "Job Tracker",
@@ -97,6 +153,12 @@ export default function JobTrackerApp({
   const [searchTerm, setSearchTerm] = useState("");
   const [showManual, setShowManual] = useState(false);
   const [showStats, setShowStats] = useState(true);
+  const [columnOrder, setColumnOrder] = useState(() => [...DEFAULT_COLUMN_ORDER]);
+  const [columnVisible, setColumnVisible] = useState(() => ({ ...DEFAULT_COLUMN_VISIBLE }));
+  const [columnWidths, setColumnWidths] = useState(() => ({ ...DEFAULT_COLUMN_WIDTHS }));
+  const [showColumnPanel, setShowColumnPanel] = useState(false);
+  const columnPanelRef = useRef(null);
+  const [tablePrefsReady, setTablePrefsReady] = useState(false);
   const [manualForm, setManualForm] = useState({
     company: "", title: "", job_id: "", link: "", salary: "", location: "",
     work_type: "", source: "", contact: "", contact_email: "", notes: "",
@@ -122,6 +184,101 @@ export default function JobTrackerApp({
   };
 
   useEffect(() => { fetchJobs(); }, []);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_TABLE_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (Array.isArray(p.order)) setColumnOrder(mergeColumnOrder(p.order));
+        if (p.visible && typeof p.visible === "object") {
+          setColumnVisible((prev) => ({ ...prev, ...p.visible }));
+        }
+        if (p.widths && typeof p.widths === "object") {
+          setColumnWidths((prev) => ({ ...prev, ...p.widths }));
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    setTablePrefsReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!tablePrefsReady) return;
+    try {
+      localStorage.setItem(
+        LS_TABLE_KEY,
+        JSON.stringify({
+          order: columnOrder,
+          visible: columnVisible,
+          widths: columnWidths,
+        })
+      );
+    } catch {
+      /* ignore */
+    }
+  }, [tablePrefsReady, columnOrder, columnVisible, columnWidths]);
+
+  useEffect(() => {
+    if (!showColumnPanel) return;
+    const fn = (e) => {
+      if (columnPanelRef.current && !columnPanelRef.current.contains(e.target)) {
+        setShowColumnPanel(false);
+      }
+    };
+    document.addEventListener("mousedown", fn);
+    return () => document.removeEventListener("mousedown", fn);
+  }, [showColumnPanel]);
+
+  const activeColumnIds = useMemo(() => {
+    return columnOrder.filter((id) => {
+      const meta = TABLE_COLUMNS.find((c) => c.id === id);
+      if (!meta) return false;
+      if (!meta.hideable) return true;
+      return columnVisible[id] !== false;
+    });
+  }, [columnOrder, columnVisible]);
+
+  const startColumnResize = useCallback((colId, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const meta = TABLE_COLUMNS.find((c) => c.id === colId);
+    const minW = meta?.minW ?? 48;
+    const startX = e.clientX;
+    const startW = columnWidths[colId] ?? meta?.defaultW ?? 120;
+    const onMove = (ev) => {
+      const w = Math.max(minW, startW + ev.clientX - startX);
+      setColumnWidths((prev) => ({ ...prev, [colId]: w }));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [columnWidths]);
+
+  const moveColumnOrder = useCallback((fromId, toId) => {
+    if (fromId === toId || fromId === "actions" || toId === "actions") return;
+    setColumnOrder((prev) => {
+      const rest = prev.filter((id) => id !== "actions");
+      const from = rest.indexOf(fromId);
+      const to = rest.indexOf(toId);
+      if (from < 0 || to < 0) return prev;
+      const next = [...rest];
+      next.splice(from, 1);
+      next.splice(to, 0, fromId);
+      return [...next, "actions"];
+    });
+  }, []);
+
+  const resetTableLayout = useCallback(() => {
+    setColumnOrder([...DEFAULT_COLUMN_ORDER]);
+    setColumnVisible({ ...DEFAULT_COLUMN_VISIBLE });
+    setColumnWidths({ ...DEFAULT_COLUMN_WIDTHS });
+    showToast("Table layout reset");
+  }, []);
 
   useEffect(() => {
     if (!lockedBucket) return;
@@ -240,9 +397,9 @@ export default function JobTrackerApp({
           extractHint
             ? `Saved. ${extractHint}`
             : aiFallback === "quota"
-              ? "Saved using page & ATS data (AI rate limit — basic extraction only)."
+              ? "Saved using page & ATS data (AI rate limit reached — basic extraction only)."
             : aiFallback === "other"
-              ? "Saved using page & ATS data (AI step skipped)."
+              ? "Saved using page & ATS data (AI could not finish — basic extraction only)."
               : "Job extracted & saved!"
         );
         setLinkInput("");
@@ -273,7 +430,7 @@ export default function JobTrackerApp({
 
   const startEdit = (job) => {
     setEditingId(job.id);
-    setEditData({ ...job });
+    setEditData({ ...job, job_id: sanitizeJobId(job.job_id) });
   };
 
   const saveEdit = async () => {
@@ -444,6 +601,198 @@ export default function JobTrackerApp({
     return true;
   });
 
+  const thStyle = (colId) => {
+    const meta = TABLE_COLUMNS.find((c) => c.id === colId);
+    const w = columnWidths[colId] ?? meta?.defaultW ?? 100;
+    return {
+      width: w,
+      minWidth: meta?.minW ?? 48,
+    };
+  };
+
+  const renderTableCell = (colId, job) => {
+    const meta = TABLE_COLUMNS.find((c) => c.id === colId);
+    const w = columnWidths[colId] ?? meta?.defaultW ?? 100;
+    const baseStyle = { width: w, minWidth: meta?.minW ?? 48 };
+
+    switch (colId) {
+      case "company":
+        return (
+          <td key={colId} className="px-3.5 py-3 font-semibold text-navy" style={baseStyle}>
+            {editingId === job.id ? (
+              <EditRowInput value={editData.company} onChange={(v) => setEditData((p) => ({ ...p, company: v }))} placeholder="Company" />
+            ) : (
+              <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.company || "—"}</span>
+            )}
+          </td>
+        );
+      case "title":
+        return (
+          <td key={colId} className="px-3.5 py-3 text-gray-600" style={baseStyle}>
+            {editingId === job.id ? (
+              <EditRowInput value={editData.title} onChange={(v) => setEditData((p) => ({ ...p, title: v }))} placeholder="Job Title" />
+            ) : (
+              <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.title || "—"}</span>
+            )}
+          </td>
+        );
+      case "job_id":
+        return (
+          <td key={colId} className="px-2 py-3 text-xs text-gray-600 font-mono" style={baseStyle}>
+            {editingId === job.id ? (
+              <EditRowInput
+                value={editData.job_id ?? ""}
+                onChange={(v) => setEditData((p) => ({ ...p, job_id: v }))}
+                placeholder="e.g. req #"
+                maxLength={8}
+              />
+            ) : (
+              <span
+                className="cursor-pointer truncate block"
+                onClick={() => startEdit(job)}
+                title={sanitizeJobId(job.job_id) || ""}
+              >
+                {sanitizeJobId(job.job_id) || "—"}
+              </span>
+            )}
+          </td>
+        );
+      case "bucket":
+        return (
+          <td key={colId} className="px-2 py-3" style={baseStyle}>
+            <select
+              value={editingId === job.id ? (editData.bucket || "General") : (job.bucket || "General")}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (editingId === job.id) setEditData((p) => ({ ...p, bucket: v }));
+                else updateField(job.id, "bucket", v);
+              }}
+              className="w-full max-w-[9rem] text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-navy outline-none focus:border-blue-400 cursor-pointer"
+            >
+              {JOB_BUCKETS.map((b) => (
+                <option key={b} value={b}>{b}</option>
+              ))}
+            </select>
+          </td>
+        );
+      case "status":
+        return (
+          <td key={colId} className="px-2.5 py-3" style={baseStyle}>
+            <StatusBadge status={job.status} onChange={(v) => updateField(job.id, "status", v)} />
+          </td>
+        );
+      case "priority":
+        return (
+          <td key={colId} className="px-2.5 py-3" style={baseStyle}>
+            <PriorityBadge priority={job.priority} onChange={(v) => updateField(job.id, "priority", v)} />
+          </td>
+        );
+      case "date_applied":
+        return (
+          <td key={colId} className="px-3.5 py-3 text-gray-600 whitespace-nowrap text-xs" style={baseStyle}>
+            {editingId === job.id ? (
+              <EditRowInput
+                type="date"
+                value={toDateInputValue(editData.date_applied)}
+                onChange={(v) => setEditData((p) => ({ ...p, date_applied: v }))}
+                className="w-full min-w-[10rem] border border-gray-200 rounded-lg px-2 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 text-navy bg-white [color-scheme:light]"
+              />
+            ) : (
+              <span className="cursor-pointer text-gray-500" onClick={() => startEdit(job)}>
+                {toDateInputValue(job.date_applied) || "—"}
+              </span>
+            )}
+          </td>
+        );
+      case "salary":
+        return (
+          <td key={colId} className="px-3.5 py-3 text-gray-600 text-xs whitespace-nowrap" style={baseStyle}>
+            {editingId === job.id ? (
+              <EditRowInput value={editData.salary} onChange={(v) => setEditData((p) => ({ ...p, salary: v }))} placeholder="Salary" />
+            ) : (
+              <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.salary || "—"}</span>
+            )}
+          </td>
+        );
+      case "location":
+        return (
+          <td key={colId} className="px-3.5 py-3 text-gray-500 text-xs" style={baseStyle}>
+            {editingId === job.id ? (
+              <EditRowInput value={editData.location} onChange={(v) => setEditData((p) => ({ ...p, location: v }))} placeholder="Location" />
+            ) : (
+              <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.location || "—"}</span>
+            )}
+          </td>
+        );
+      case "work_type":
+        return (
+          <td key={colId} className="px-2.5 py-3 text-xs text-gray-500" style={baseStyle}>
+            {job.work_type || "—"}
+          </td>
+        );
+      case "source":
+        return (
+          <td key={colId} className="px-2.5 py-3 text-xs text-gray-400" style={baseStyle}>
+            {job.source || "—"}
+          </td>
+        );
+      case "link":
+        return (
+          <td key={colId} className="px-2.5 py-3" style={baseStyle}>
+            {job.link ? (
+              <a
+                href={job.link.startsWith("http") ? job.link : `https://${job.link}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-blue-500 hover:text-blue-700 text-xs font-medium no-underline hover:underline"
+              >
+                Open ↗
+              </a>
+            ) : (
+              "—"
+            )}
+          </td>
+        );
+      case "notes":
+        return (
+          <td key={colId} className="px-3.5 py-3 text-gray-400 text-xs" style={baseStyle}>
+            {editingId === job.id ? (
+              <EditRowInput value={editData.notes} onChange={(v) => setEditData((p) => ({ ...p, notes: v }))} placeholder="Notes" />
+            ) : (
+              <span
+                className="cursor-pointer"
+                onClick={() => startEdit(job)}
+                style={{ fontStyle: job.notes ? "normal" : "italic", opacity: job.notes ? 1 : 0.5 }}
+              >
+                {job.notes || "click to add"}
+              </span>
+            )}
+          </td>
+        );
+      case "actions":
+        return (
+          <td key={colId} className="px-2 py-3" style={baseStyle}>
+            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              {editingId === job.id && (
+                <button type="button" onClick={saveEdit} className="text-green-600 bg-green-50 border-none rounded-md px-2 py-1 text-[10px] font-bold cursor-pointer">
+                  ✓ Save
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => deleteJob(job.id)}
+                className="text-gray-300 hover:text-red-500 bg-transparent border-none text-lg cursor-pointer transition-colors px-1"
+              >
+                ×
+              </button>
+            </div>
+          </td>
+        );
+      default:
+        return <td key={colId} style={baseStyle} />;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F7F8FA]">
       {toast && (
@@ -483,6 +832,83 @@ export default function JobTrackerApp({
                   className="text-white/60 hover:text-white text-xs border border-white/20 rounded-lg px-3 py-2 bg-white/5 cursor-pointer transition-colors">
                   {showStats ? "📊 Hide Stats" : "📊 Show Stats"}
                 </button>
+                <div className="relative" ref={columnPanelRef}>
+                  <button
+                    type="button"
+                    onClick={() => setShowColumnPanel((v) => !v)}
+                    className="text-white/60 hover:text-white text-xs border border-white/20 rounded-lg px-3 py-2 bg-white/5 cursor-pointer transition-colors"
+                  >
+                    ⚙ Columns
+                  </button>
+                  {showColumnPanel && (
+                    <div
+                      className="absolute right-0 top-full mt-2 z-[110] w-[min(100vw-2rem,20rem)] rounded-xl border border-gray-200 bg-white shadow-xl p-3 text-left"
+                      onMouseDown={(e) => e.stopPropagation()}
+                    >
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-2">
+                        Show, order & resize
+                      </div>
+                      <p className="text-[10px] text-gray-500 m-0 mb-2 leading-snug">
+                        Drag rows to reorder. Drag column edges in the table to resize. Preferences save in this browser.
+                      </p>
+                      <ul className="max-h-64 overflow-y-auto space-y-1 m-0 p-0 list-none">
+                        {columnOrder
+                          .filter((id) => id !== "actions")
+                          .map((id) => {
+                            const meta = TABLE_COLUMNS.find((c) => c.id === id);
+                            if (!meta) return null;
+                            return (
+                              <li
+                                key={id}
+                                draggable
+                                onDragStart={(e) => {
+                                  e.dataTransfer.setData("text/plain", id);
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                onDragOver={(e) => {
+                                  e.preventDefault();
+                                  e.dataTransfer.dropEffect = "move";
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  const from = e.dataTransfer.getData("text/plain");
+                                  moveColumnOrder(from, id);
+                                }}
+                                className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-navy bg-gray-50 hover:bg-gray-100 cursor-grab active:cursor-grabbing"
+                              >
+                                <span className="text-gray-400 select-none" aria-hidden>⋮⋮</span>
+                                <input
+                                  type="checkbox"
+                                  className="rounded border-gray-300"
+                                  checked={columnVisible[id] !== false}
+                                  onChange={() =>
+                                    setColumnVisible((prev) => {
+                                      const cur = prev[id] !== false;
+                                      return { ...prev, [id]: !cur };
+                                    })
+                                  }
+                                />
+                                <span className="flex-1 truncate font-medium">{meta.label}</span>
+                              </li>
+                            );
+                          })}
+                      </ul>
+                      <p className="text-[10px] text-gray-400 mt-2 mb-0">
+                        Actions column (save / delete) always stays on the right.
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetTableLayout();
+                          setShowColumnPanel(false);
+                        }}
+                        className="mt-3 w-full rounded-lg border border-gray-200 bg-white py-2 text-xs font-semibold text-gray-600 hover:bg-gray-50 cursor-pointer"
+                      >
+                        Reset layout
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <button onClick={exportCSV}
                   className="text-white/60 hover:text-white text-xs border border-white/20 rounded-lg px-3 py-2 bg-white/5 cursor-pointer transition-colors">
                   📥 Export CSV
@@ -659,7 +1085,7 @@ export default function JobTrackerApp({
         <div className="mx-4 md:mx-8 mt-4 bg-white rounded-2xl p-6 shadow-sm border border-gray-100 animate-fade-in">
           <h3 className="text-sm font-bold text-navy m-0 mb-4">Add Job Manually</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {[["company", "Company *"], ["title", "Job Title *"], ["job_id", "Job ID"], ["link", "Application Link"],
+            {[["company", "Company *"], ["title", "Job Title *"], ["job_id", "Post ID (max 8)"], ["link", "Application Link"],
               ["date_applied", "Date applied"], ["salary", "Salary Range"], ["location", "Location"], ["work_type", "Work Type"],
               ["source", "Source"], ["contact", "Contact Person"], ["contact_email", "Contact Email"],
             ].map(([key, label]) => (
@@ -673,8 +1099,12 @@ export default function JobTrackerApp({
                     className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm mt-1 outline-none focus:border-blue-400 bg-white"
                   />
                 ) : (
-                  <input value={manualForm[key]} onChange={(e) => setManualForm((p) => ({ ...p, [key]: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm mt-1 outline-none focus:border-blue-400" />
+                  <input
+                    value={manualForm[key]}
+                    onChange={(e) => setManualForm((p) => ({ ...p, [key]: e.target.value }))}
+                    maxLength={key === "job_id" ? 8 : undefined}
+                    className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm mt-1 outline-none focus:border-blue-400"
+                  />
                 )}
               </div>
             ))}
@@ -802,117 +1232,38 @@ export default function JobTrackerApp({
         ) : (
           <div className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100">
             <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-sm">
+              <table className="w-full border-collapse text-sm table-fixed">
                 <thead>
                   <tr className="bg-[#FAFBFC]">
-                    {["Company", "Title", "Job ID", "Track", "Status", "Priority", "Date", "Salary", "Location", "Type", "Source", "Link", "Notes", ""].map((h) => (
-                      <th key={h} className="px-3.5 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider border-b-2 border-gray-100 whitespace-nowrap">{h}</th>
-                    ))}
+                    {activeColumnIds.map((colId) => {
+                      const meta = TABLE_COLUMNS.find((c) => c.id === colId);
+                      const label = meta?.label ?? "";
+                      const isActions = colId === "actions";
+                      return (
+                        <th
+                          key={colId}
+                          className="relative px-3.5 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider border-b-2 border-gray-100 whitespace-nowrap group/th"
+                          style={thStyle(colId)}
+                          aria-label={isActions ? "Row actions" : label}
+                          title={meta?.headerTitle}
+                        >
+                          {label || (isActions ? <span className="sr-only">Actions</span> : null)}
+                          <div
+                            role="separator"
+                            aria-orientation="vertical"
+                            aria-hidden
+                            className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-[1] hover:bg-blue-400/40 group-hover/th:bg-gray-200/80"
+                            onMouseDown={(e) => startColumnResize(colId, e)}
+                          />
+                        </th>
+                      );
+                    })}
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map((job) => (
                     <tr key={job.id} className="border-b border-gray-50 hover:bg-[#FAFBFC] transition-colors group">
-                      <td className="px-3.5 py-3 font-semibold text-navy max-w-[160px]">
-                        {editingId === job.id ? (
-                          <EditRowInput value={editData.company} onChange={(v) => setEditData((p) => ({ ...p, company: v }))} placeholder="Company" />
-                        ) : (
-                          <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.company || "—"}</span>
-                        )}
-                      </td>
-                      <td className="px-3.5 py-3 text-gray-600 max-w-[200px]">
-                        {editingId === job.id ? (
-                          <EditRowInput value={editData.title} onChange={(v) => setEditData((p) => ({ ...p, title: v }))} placeholder="Job Title" />
-                        ) : (
-                          <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.title || "—"}</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-3 text-xs text-gray-600 font-mono max-w-[9rem]">
-                        {editingId === job.id ? (
-                          <EditRowInput value={editData.job_id ?? ""} onChange={(v) => setEditData((p) => ({ ...p, job_id: v }))} placeholder="Job ID" />
-                        ) : (
-                          <span className="cursor-pointer truncate block" onClick={() => startEdit(job)} title={job.job_id || ""}>
-                            {job.job_id || "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-2 py-3 min-w-[7.5rem]">
-                        <select
-                          value={editingId === job.id ? (editData.bucket || "General") : (job.bucket || "General")}
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            if (editingId === job.id) setEditData((p) => ({ ...p, bucket: v }));
-                            else updateField(job.id, "bucket", v);
-                          }}
-                          className="w-full max-w-[9rem] text-xs border border-gray-200 rounded-lg px-2 py-1.5 bg-white text-navy outline-none focus:border-blue-400 cursor-pointer"
-                        >
-                          {JOB_BUCKETS.map((b) => (
-                            <option key={b} value={b}>{b}</option>
-                          ))}
-                        </select>
-                      </td>
-                      <td className="px-2.5 py-3">
-                        <StatusBadge status={job.status} onChange={(v) => updateField(job.id, "status", v)} />
-                      </td>
-                      <td className="px-2.5 py-3">
-                        <PriorityBadge priority={job.priority} onChange={(v) => updateField(job.id, "priority", v)} />
-                      </td>
-                      <td className="px-3.5 py-3 text-gray-600 whitespace-nowrap text-xs min-w-[10.5rem]">
-                        {editingId === job.id ? (
-                          <EditRowInput
-                            type="date"
-                            value={toDateInputValue(editData.date_applied)}
-                            onChange={(v) => setEditData((p) => ({ ...p, date_applied: v }))}
-                            className="w-full min-w-[10rem] border border-gray-200 rounded-lg px-2 py-1.5 text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 text-navy bg-white [color-scheme:light]"
-                          />
-                        ) : (
-                          <span className="cursor-pointer text-gray-500" onClick={() => startEdit(job)}>
-                            {toDateInputValue(job.date_applied) || "—"}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3.5 py-3 text-gray-600 text-xs whitespace-nowrap">
-                        {editingId === job.id ? (
-                          <EditRowInput value={editData.salary} onChange={(v) => setEditData((p) => ({ ...p, salary: v }))} placeholder="Salary" />
-                        ) : (
-                          <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.salary || "—"}</span>
-                        )}
-                      </td>
-                      <td className="px-3.5 py-3 text-gray-500 text-xs max-w-[140px]">
-                        {editingId === job.id ? (
-                          <EditRowInput value={editData.location} onChange={(v) => setEditData((p) => ({ ...p, location: v }))} placeholder="Location" />
-                        ) : (
-                          <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.location || "—"}</span>
-                        )}
-                      </td>
-                      <td className="px-2.5 py-3 text-xs text-gray-500">{job.work_type || "—"}</td>
-                      <td className="px-2.5 py-3 text-xs text-gray-400">{job.source || "—"}</td>
-                      <td className="px-2.5 py-3">
-                        {job.link ? (
-                          <a href={job.link.startsWith("http") ? job.link : `https://${job.link}`}
-                            target="_blank" rel="noopener noreferrer"
-                            className="text-blue-500 hover:text-blue-700 text-xs font-medium no-underline hover:underline">Open ↗</a>
-                        ) : "—"}
-                      </td>
-                      <td className="px-3.5 py-3 text-gray-400 text-xs max-w-[200px]">
-                        {editingId === job.id ? (
-                          <EditRowInput value={editData.notes} onChange={(v) => setEditData((p) => ({ ...p, notes: v }))} placeholder="Notes" />
-                        ) : (
-                          <span className="cursor-pointer" onClick={() => startEdit(job)}
-                            style={{ fontStyle: job.notes ? "normal" : "italic", opacity: job.notes ? 1 : 0.5 }}>
-                            {job.notes || "click to add"}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-2 py-3">
-                        <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {editingId === job.id && (
-                            <button onClick={saveEdit} className="text-green-600 bg-green-50 border-none rounded-md px-2 py-1 text-[10px] font-bold cursor-pointer">✓ Save</button>
-                          )}
-                          <button onClick={() => deleteJob(job.id)}
-                            className="text-gray-300 hover:text-red-500 bg-transparent border-none text-lg cursor-pointer transition-colors px-1">×</button>
-                        </div>
-                      </td>
+                      {activeColumnIds.map((colId) => renderTableCell(colId, job))}
                     </tr>
                   ))}
                 </tbody>

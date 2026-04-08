@@ -23,6 +23,7 @@ CREATE TABLE public.jobs (
   follow_up text NOT NULL DEFAULT '',
   notes text NOT NULL DEFAULT '',
   bucket text NOT NULL DEFAULT 'General',
+  job_id text NOT NULL DEFAULT '',
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

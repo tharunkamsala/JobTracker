@@ -5,6 +5,7 @@ import {
   extractWorkday,
   getWorkdayUrlFallback,
 } from "@/lib/extractAts";
+import { deriveHeuristicJobId } from "@/lib/jobId";
 
 /** Walk JSON-LD and return first JobPosting node */
 function findJobPostingNode(data) {
@@ -51,7 +52,7 @@ async function scrapeUrl(url) {
         "Accept-Language": "en-US,en;q=0.9",
         "Cache-Control": "no-cache",
       },
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(10000),
     });
 
     const html = await res.text();
@@ -214,6 +215,7 @@ RULES:
 3. work_type: one of "Remote", "Hybrid", "On-site", or "" if unknown.
 4. source: short label such as "LinkedIn", "Greenhouse", "Workday", "Indeed", or the careers product name.
 5. notes: 1–3 sentences summarizing role/stack/location from official excerpt + page text; empty string if nothing useful.
+6. job_id: numeric or alphanumeric posting/requisition id if visible in URL or page; else "".
 
 Return ONLY valid JSON, no markdown:
 {
@@ -223,7 +225,8 @@ Return ONLY valid JSON, no markdown:
   "location": "",
   "work_type": "",
   "source": "",
-  "notes": ""
+  "notes": "",
+  "job_id": ""
 }`;
 
   const model = getGeminiModel();
@@ -314,6 +317,7 @@ function extractFromStructuredData(pageContent, url) {
     work_type: "",
     source: "",
     notes: "",
+    job_id: "",
   };
 
   try {
@@ -346,6 +350,14 @@ function extractFromStructuredData(pageContent, url) {
   if (job) {
     result.title = (job.title || "").trim();
     result.company = hiringOrgName(job.hiringOrganization);
+    const ident = job.identifier;
+    if (ident != null) {
+      if (typeof ident === "string" || typeof ident === "number") {
+        result.job_id = String(ident).trim();
+      } else if (typeof ident === "object" && ident.value != null) {
+        result.job_id = String(ident.value).trim();
+      }
+    }
     const loc = job.jobLocation;
     if (loc) {
       if (typeof loc === "object") {
@@ -414,6 +426,7 @@ function mergeAtsIntoBaseline(baseline, ats) {
     "work_type",
     "source",
     "notes",
+    "job_id",
   ]) {
     if (ats && isFilled(ats[k])) out[k] = ats[k].trim();
   }
@@ -431,6 +444,7 @@ function mergeExtraction(heuristic, ai) {
     "work_type",
     "source",
     "notes",
+    "job_id",
   ]) {
     if (isFilled(ai[key])) out[key] = ai[key].trim();
   }
@@ -468,7 +482,18 @@ export async function POST(req) {
       process.env.DISABLE_GEMINI_AI === "1";
     const hasGemini =
       !!process.env.GEMINI_API_KEY && !aiDisabled;
-    if (hasGemini && (pageContent.ok || pageContent.bodyText || atsHint)) {
+    /** Greenhouse/Workday already returned company+title — skip Gemini for speed (set FORCE_GEMINI_AI=true to always call AI). */
+    const skipGeminiForSpeed =
+      !!atsHint &&
+      isFilled(atsHint.company) &&
+      isFilled(atsHint.title) &&
+      process.env.FORCE_GEMINI_AI !== "true";
+
+    if (
+      hasGemini &&
+      !skipGeminiForSpeed &&
+      (pageContent.ok || pageContent.bodyText || atsHint)
+    ) {
       const geminiRes = await extractWithGeminiUnified(pageContent, url, atsHint);
       geminiMeta = geminiRes && typeof geminiRes === "object" ? geminiRes : null;
       if (geminiRes && typeof geminiRes === "object" && "data" in geminiRes) {
@@ -498,6 +523,12 @@ export async function POST(req) {
     const aiOk = !!(geminiMeta && !geminiMeta.error && geminiMeta.data);
     const suppressGeminiDetail = aiFallback === "quota";
 
+    let jobIdOut =
+      (atsHint && isFilled(atsHint.job_id) && atsHint.job_id.trim()) ||
+      (isFilled(extracted.job_id) && extracted.job_id.trim()) ||
+      "";
+    if (!jobIdOut) jobIdOut = deriveHeuristicJobId(url);
+
     return NextResponse.json({
       success: true,
       data: {
@@ -508,15 +539,19 @@ export async function POST(req) {
         work_type: extracted.work_type || "",
         source: extracted.source || "",
         notes: extracted.notes || "",
+        job_id: jobIdOut,
         link: url,
       },
       meta: {
         method:
-          !hasGemini
-            ? "heuristic+ats"
+          !hasGemini || skipGeminiForSpeed
+            ? skipGeminiForSpeed
+              ? "ats-fast"
+              : "heuristic+ats"
             : aiOk
               ? "unified-ai"
               : "heuristic+ats-fallback",
+        skippedGeminiForAtsSpeed: skipGeminiForSpeed || undefined,
         aiDisabled: aiDisabled || undefined,
         aiFallback: aiFallback || undefined,
         atsProvider,

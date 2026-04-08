@@ -98,7 +98,7 @@ export default function JobTrackerApp({
   const [showManual, setShowManual] = useState(false);
   const [showStats, setShowStats] = useState(true);
   const [manualForm, setManualForm] = useState({
-    company: "", title: "", link: "", salary: "", location: "",
+    company: "", title: "", job_id: "", link: "", salary: "", location: "",
     work_type: "", source: "", contact: "", contact_email: "", notes: "",
     date_applied: new Date().toISOString().split("T")[0],
     bucket: "General",
@@ -211,6 +211,7 @@ export default function JobTrackerApp({
       const jobBody = {
         company: info.company || "",
         title: info.title || "",
+        job_id: info.job_id || "",
         status: "Bookmarked",
         link: linkInput.trim(),
         priority: "Medium",
@@ -324,7 +325,7 @@ export default function JobTrackerApp({
         setPendingForceSave(null);
         setJobs((prev) => [saved, ...prev]);
         setManualForm({
-          company: "", title: "", link: "", salary: "", location: "",
+          company: "", title: "", job_id: "", link: "", salary: "", location: "",
           work_type: "", source: "", contact: "", contact_email: "", notes: "",
           date_applied: new Date().toISOString().split("T")[0],
           bucket: resetBucket,
@@ -350,7 +351,7 @@ export default function JobTrackerApp({
       if (kind === "extract") setLinkInput("");
       if (kind === "manual") {
         setManualForm({
-          company: "", title: "", link: "", salary: "", location: "",
+          company: "", title: "", job_id: "", link: "", salary: "", location: "",
           work_type: "", source: "", contact: "", contact_email: "", notes: "",
           date_applied: new Date().toISOString().split("T")[0],
           bucket: resetBucket,
@@ -366,9 +367,9 @@ export default function JobTrackerApp({
     const rowsSource = isLocked
       ? jobs.filter((j) => (j.bucket || "General") === lockedBucket)
       : jobs;
-    const headers = ["Company","Title","Bucket","Status","Link","Priority","Date Applied","Salary","Location","Work Type","Source","Contact","Email","Interview Stage","Interviewer","Next Step","Follow Up","Notes"];
+    const headers = ["Company","Title","Job ID","Bucket","Status","Link","Priority","Date Applied","Salary","Location","Work Type","Source","Contact","Email","Interview Stage","Interviewer","Next Step","Follow Up","Notes"];
     const rows = rowsSource.map((j) =>
-      [j.company, j.title, j.bucket || "General", j.status, j.link, j.priority, j.date_applied, j.salary, j.location, j.work_type, j.source, j.contact, j.contact_email, j.interview_stage, j.interviewer, j.next_step, j.follow_up, j.notes]
+      [j.company, j.title, j.job_id || "", j.bucket || "General", j.status, j.link, j.priority, j.date_applied, j.salary, j.location, j.work_type, j.source, j.contact, j.contact_email, j.interview_stage, j.interviewer, j.next_step, j.follow_up, j.notes]
         .map((v) => `"${(v || "").replace(/"/g, '""')}"`)
     );
     const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
@@ -436,7 +437,9 @@ export default function JobTrackerApp({
     if (filter !== "All" && j.status !== filter) return false;
     if (searchTerm) {
       const s = searchTerm.toLowerCase();
-      return [j.company, j.title, j.location, j.notes].some((f) => (f || "").toLowerCase().includes(s));
+      return [j.company, j.title, j.job_id, j.location, j.notes].some((f) =>
+        (f || "").toLowerCase().includes(s)
+      );
     }
     return true;
   });
@@ -656,7 +659,7 @@ export default function JobTrackerApp({
         <div className="mx-4 md:mx-8 mt-4 bg-white rounded-2xl p-6 shadow-sm border border-gray-100 animate-fade-in">
           <h3 className="text-sm font-bold text-navy m-0 mb-4">Add Job Manually</h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            {[["company", "Company *"], ["title", "Job Title *"], ["link", "Application Link"],
+            {[["company", "Company *"], ["title", "Job Title *"], ["job_id", "Job ID"], ["link", "Application Link"],
               ["date_applied", "Date applied"], ["salary", "Salary Range"], ["location", "Location"], ["work_type", "Work Type"],
               ["source", "Source"], ["contact", "Contact Person"], ["contact_email", "Contact Email"],
             ].map(([key, label]) => (
@@ -766,7 +769,7 @@ export default function JobTrackerApp({
       {(jobs.length > 0 || isLocked) && (
         <div className="px-4 md:px-8 pb-3">
           <input value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="🔍  Search company, title, location..."
+            placeholder="🔍  Search company, title, job id, location..."
             className="w-full max-w-md px-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-blue-400" />
         </div>
       )}
@@ -802,7 +805,7 @@ export default function JobTrackerApp({
               <table className="w-full border-collapse text-sm">
                 <thead>
                   <tr className="bg-[#FAFBFC]">
-                    {["Company", "Title", "Track", "Status", "Priority", "Date", "Salary", "Location", "Type", "Source", "Link", "Notes", ""].map((h) => (
+                    {["Company", "Title", "Job ID", "Track", "Status", "Priority", "Date", "Salary", "Location", "Type", "Source", "Link", "Notes", ""].map((h) => (
                       <th key={h} className="px-3.5 py-3 text-left text-[10px] font-bold text-gray-400 uppercase tracking-wider border-b-2 border-gray-100 whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -822,6 +825,15 @@ export default function JobTrackerApp({
                           <EditRowInput value={editData.title} onChange={(v) => setEditData((p) => ({ ...p, title: v }))} placeholder="Job Title" />
                         ) : (
                           <span className="cursor-pointer" onClick={() => startEdit(job)}>{job.title || "—"}</span>
+                        )}
+                      </td>
+                      <td className="px-2 py-3 text-xs text-gray-600 font-mono max-w-[9rem]">
+                        {editingId === job.id ? (
+                          <EditRowInput value={editData.job_id ?? ""} onChange={(v) => setEditData((p) => ({ ...p, job_id: v }))} placeholder="Job ID" />
+                        ) : (
+                          <span className="cursor-pointer truncate block" onClick={() => startEdit(job)} title={job.job_id || ""}>
+                            {job.job_id || "—"}
+                          </span>
                         )}
                       </td>
                       <td className="px-2 py-3 min-w-[7.5rem]">

@@ -108,6 +108,7 @@ export async function POST(req) {
           follow_up: body.follow_up || "",
           notes: body.notes || "",
           bucket: body.bucket || "General",
+          job_id: body.job_id || "",
         },
       ])
       .select()
